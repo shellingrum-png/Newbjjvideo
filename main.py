@@ -739,25 +739,6 @@ def main():
     existing_bvids = get_existing_bvids()
     print(f"当前Notion中已有 {len(existing_bvids)} 个视频")
     
-    all_videos = []
-    for kw in BILIBILI_SEARCH_KEYWORDS:
-        print(f"\n
-    正在搜索关键词: {kw}")
-        videos = search_bilibili_videos(kw, page_size=30)
-        all_videos.extend(videos)
-        print(f"关键词 {kw} 搜索到 {len(videos)} 个视频")
-# 按BV号去重，避免同一个视频在多个关键词里被搜到
-seen_bvids = set()
-unique_videos = []
-for video in all_videos:
-    bvid = video["bvid"]
-    if bvid not in seen_bvids:
-        seen_bvids.add(bvid)
-        unique_videos.append(video)
-videos = unique_videos
-print(f"
-所有关键词共搜索到 {len(all_videos)} 个视频，去重后 {len(videos)} 个")
-    if not videos:
         print("❌ 未搜索到视频")
         return
     
@@ -788,3 +769,19 @@ print(f"
 
 if __name__ == "__main__":
     main()
+    all_videos = []
+    for kw in BILIBILI_SEARCH_KEYWORDS:
+        print(f"\n正在搜索关键词: {kw}")
+        videos = search_bilibili_videos(kw, page_size=30)
+        all_videos.extend(videos)
+        print(f"关键词 {kw} 搜索到 {len(videos)} 个视频")
+    # 按BV号去重，避免同一个视频在多个关键词里被搜到
+    seen_bvids = set()
+    unique_videos = []
+    for video in all_videos:
+        bvid = video["bvid"]
+        if bvid not in seen_bvids:
+            seen_bvids.add(bvid)
+            unique_videos.append(video)
+    videos = unique_videos
+    print(f"\n所有关键词共搜索到 {len(all_videos)} 个视频，去重后 {len(videos)} 个")
