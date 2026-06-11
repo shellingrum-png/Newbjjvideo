@@ -737,37 +737,6 @@ def main():
     # 第二步：自动搜索新视频
     print("\n[步骤2] 搜索B站最新发布的巴西柔术视频...")
     existing_bvids = get_existing_bvids()
-    print(f"当前Notion中已有 {len(existing_bvids)} 个视频")
-    
-        print("❌ 未搜索到视频")
-        return
-    
-    print(f"搜索到 {len(videos)} 个视频")
-    
-    # 排重，只处理新视频
-    new_videos = []
-    for video in videos:
-        bvid = video["bvid"]
-        if bvid not in existing_bvids:
-            new_videos.append(video)
-    
-    print(f"其中有 {len(new_videos)} 个新视频需要处理")
-    
-    # 处理新视频，最多处理10个
-    processed_count = 0
-    for i, video in enumerate(new_videos):
-        if processed_count >= 10:
-            break
-        bvid = video["bvid"]
-        print(f"\n[{i+1}/{len(new_videos)}] 处理新视频: {bvid}")
-        if process_single_video(bvid):
-            processed_count += 1
-        print(f"已成功处理 {processed_count}/10 个视频")
-    
-    print("\n🎉 所有处理任务结束")
-
-
-if __name__ == "__main__":
     main()
     all_videos = []
     for kw in BILIBILI_SEARCH_KEYWORDS:
@@ -785,3 +754,49 @@ if __name__ == "__main__":
             unique_videos.append(video)
     videos = unique_videos
     print(f"\n所有关键词共搜索到 {len(all_videos)} 个视频，去重后 {len(videos)} 个")
+    all_videos = []
+    for kw in BILIBILI_SEARCH_KEYWORDS:
+        print(f"\n正在搜索关键词: {kw}")
+        videos = search_bilibili_videos(kw, page_size=30)
+        all_videos.extend(videos)
+        print(f"关键词 {kw} 搜索到 {len(videos)} 个视频")
+    # 按BV号去重，避免同一个视频在多个关键词里被搜到
+    seen_bvids = set()
+    unique_videos = []
+    for video in all_videos:
+        bvid = video["bvid"]
+        if bvid not in seen_bvids:
+            seen_bvids.add(bvid)
+            unique_videos.append(video)
+    videos = unique_videos
+    print(f"\n所有关键词共搜索到 {len(all_videos)} 个视频，去重后 {len(videos)} 个")
+
+    if not videos:
+        print("❌ 未搜索到视频")
+        return
+
+    # 排重，只处理新视频
+    new_videos = []
+    for video in videos:
+        bvid = video["bvid"]
+        if bvid not in existing_bvids:
+            new_videos.append(video)
+
+    print(f"其中有 {len(new_videos)} 个新视频需要处理")
+
+    # 处理新视频，最多处理10个，避免消耗太多API额度
+    processed_count = 0
+    for i, video in enumerate(new_videos):
+        if processed_count >= 10:
+            break
+        bvid = video["bvid"]
+        print(f"\n[{i+1}/{len(new_videos)}] 处理新视频: {bvid}")
+        if process_single_video(bvid):
+            processed_count += 1
+        print(f"已成功处理 {processed_count}/10 个视频")
+
+    print("\n🎉 所有处理任务结束")
+
+
+if __name__ == "__main__":
+    main()
