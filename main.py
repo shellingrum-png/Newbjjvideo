@@ -740,12 +740,12 @@ def main():
     print(f"当前Notion中已有 {len(existing_bvids)} 个视频")
     
     all_videos = []
-for kw in BILIBILI_SEARCH_KEYWORDS:
-    print(f"
-正在搜索关键词: {kw}")
-    videos = search_bilibili_videos(kw, page_size=30)
-    all_videos.extend(videos)
-    print(f"关键词 {kw} 搜索到 {len(videos)} 个视频")
+    for kw in BILIBILI_SEARCH_KEYWORDS:
+        print(f"\n
+    正在搜索关键词: {kw}")
+        videos = search_bilibili_videos(kw, page_size=30)
+        all_videos.extend(videos)
+        print(f"关键词 {kw} 搜索到 {len(videos)} 个视频")
 # 按BV号去重，避免同一个视频在多个关键词里被搜到
 seen_bvids = set()
 unique_videos = []
