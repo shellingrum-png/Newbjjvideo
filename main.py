@@ -3,6 +3,7 @@ import os
 import re
 import json
 import requests
+import time
 from dotenv import load_dotenv
 from notion_client import Client
 from openai import OpenAI
@@ -23,7 +24,7 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
 # 优化配置
 SEARCH_PAGE_SIZE = 15  # 每次只搜15个视频，足够覆盖每日更新
 MAX_PROCESS_VIDEO = 5  # 每次最多处理5个，避免跑太久
-REQUEST_TIMEOUT = 10  # 所有请求超时10秒，防止卡住
+REQUEST_TIMEOUT = 20  # 所有请求超时20秒，防止卡住
 # 前置黑名单关键词，包含这些的直接跳过，不用调AI，省大量时间
 BLACKLIST_KEYWORDS = {"压胯", "拉伸", "柔韧性", "瑜伽", "摔跤", "柔道", "跆拳道", "拳击", "MMA", "泰拳", "健身", "训练", "儿童", "少儿", "萌妹", "美女", "搞笑", "挑战", "vlog", "日常"}
 
@@ -189,8 +190,12 @@ def is_related_by_keyword(title: str, desc: str) -> bool:
     return True
 
 
-def analyze_content_with_ai(content: str) -> Optional[Dict]:
-    """使用大模型分析内容，提取技术分类、核心动作要点，同时判断是否相关，一次调用搞定"""
+def analyze_content_with_ai(content: str, retry: int = 0) -> Optional[Dict]:
+    """使用大模型分析内容，提取技术分类、核心动作要点，同时判断是否相关，一次调用搞定，失败自动重试3次"""
+    if retry >= 3:
+        print(f"❌ AI调用重试3次都失败，放弃")
+        return None
+        
     prompt = f"""
 请分析以下巴西柔术相关的视频内容，先判断是否是真正的巴西柔术技术相关视频，然后提取信息：
 1. 首先判断：是否是巴西柔术技术相关（包含技术教学、实战演示、技巧讲解、训练方法、比赛技术分析才算，其他都不算）
@@ -232,7 +237,9 @@ def analyze_content_with_ai(content: str) -> Optional[Dict]:
             return None
     except Exception as e:
         print(f"调用AI分析出错: {e}")
-        return None
+        print(f"🤖 第{retry+1}次重试，等待2秒...")
+        time.sleep(2)
+        return analyze_content_with_ai(content, retry + 1)
 
 
 def create_notion_page(video_info: Dict, ai_analysis: Dict, content_text: str) -> Optional[str]:
