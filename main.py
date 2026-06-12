@@ -20,9 +20,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
 
+# 优化配置
+SEARCH_PAGE_SIZE = 15  # 每次只搜15个视频，足够覆盖每日更新
+MAX_PROCESS_VIDEO = 5  # 每次最多处理5个，避免跑太久
+REQUEST_TIMEOUT = 10  # 所有请求超时10秒，防止卡住
+# 前置黑名单关键词，包含这些的直接跳过，不用调AI，省大量时间
+BLACKLIST_KEYWORDS = {"压胯", "拉伸", "柔韧性", "瑜伽", "摔跤", "柔道", "跆拳道", "拳击", "MMA", "泰拳", "健身", "训练", "儿童", "少儿", "萌妹", "美女", "搞笑", "挑战", "vlog", "日常"}
+
 # 初始化客户端
 notion = Client(auth=NOTION_API_TOKEN)
-openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, timeout=REQUEST_TIMEOUT)
 
 
 def get_existing_bvids() -> List[str]:
@@ -51,14 +58,15 @@ def get_existing_bvids() -> List[str]:
     return list(set(bvids))  # 去重
 
 
-def search_bilibili_videos(keyword: str, page_size: int = 30) -> List[Dict]:
-    """调用B站搜索API，获取最新发布的视频"""
+def search_bilibili_videos(keyword: str) -> List[Dict]:
+    """调用B站搜索API，只获取最近1天发布的最新视频"""
     url = "https://api.bilibili.com/x/web-interface/search/all/v2"
     params = {
         "keyword": keyword,
         "search_type": "video",
         "order": "pubdate",  # 按最新发布排序
-        "page_size": page_size,
+        "time_range": 1,  # 只搜最近1天（昨日）发布的视频，不会重复处理
+        "page_size": SEARCH_PAGE_SIZE,
         "page": 1
     }
     
@@ -68,7 +76,7 @@ def search_bilibili_videos(keyword: str, page_size: int = 30) -> List[Dict]:
     }
     
     try:
-        response = requests.get(url, params=params, headers=headers)
+        response = requests.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         
@@ -98,7 +106,7 @@ def get_video_info(bvid: str) -> Optional[Dict]:
     }
     
     try:
-        response = requests.get(url, params=params, headers=headers)
+        response = requests.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         
@@ -126,7 +134,7 @@ def get_video_cc_subtitle(bvid: str, cid: int) -> Optional[str]:
     }
     
     try:
-        response = requests.get(url, params=params, headers=headers)
+        response = requests.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         
@@ -153,7 +161,7 @@ def get_video_cc_subtitle(bvid: str, cid: int) -> Optional[str]:
         
         # 下载字幕内容
         subtitle_url = f"https:{zh_subtitle['subtitle_url']}"
-        subtitle_response = requests.get(subtitle_url, headers=headers)
+        subtitle_response = requests.get(subtitle_url, headers=headers, timeout=REQUEST_TIMEOUT)
         subtitle_response.raise_for_status()
         subtitle_data = subtitle_response.json()
         
@@ -168,69 +176,35 @@ def get_video_cc_subtitle(bvid: str, cid: int) -> Optional[str]:
         return None
 
 
-def is_bjj_related(video_info: Dict) -> bool:
-    """AI判断视频是否是真正的巴西柔术技术相关视频"""
-    title = video_info["title"]
-    desc = video_info["desc"][:500]  # 只取前500字简介
-    
-    prompt = f"""
-请判断这个视频是不是真正的巴西柔术(BJJ)技术相关视频：
-视频标题：{title}
-视频简介：{desc}
-
-判断规则：
-✅ 是巴西柔术相关：包含巴西柔术技术教学、实战演示、技巧讲解、训练方法、比赛技术分析等内容
-❌ 不是相关：普通柔韧性训练、压胯、摔跤、柔道、普通搏击比赛、搞笑视频、 unrelated内容
-
-只返回JSON，不要其他内容：
-{{"is_related": true/false}}
-"""
-    
-    try:
-        response = openai_client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "你是一个专业的巴西柔术内容审核员，只判断内容是否相关。"},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1
-        )
-        
-        result = response.choices[0].message.content.strip()
-        # 解析JSON
-        try:
-            data = json.loads(result)
-            return data.get("is_related", False)
-        except json.JSONDecodeError:
-            # 尝试提取JSON部分
-            json_match = re.search(r'\{.*\}', result, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                return data.get("is_related", False)
-            # 如果解析失败，保守判断为不相关
+def is_related_by_keyword(title: str, desc: str) -> bool:
+    """前置关键词过滤，快速判断明显不相关的，不用调AI"""
+    text = f"{title}{desc}".lower()
+    # 先看有没有黑名单关键词
+    for kw in BLACKLIST_KEYWORDS:
+        if kw in text:
             return False
-    except Exception as e:
-        print(f"相关性判断出错: {e}")
+    # 至少要包含巴西柔术相关关键词
+    if "巴西柔术" not in text and "bjj" not in text and "柔术" not in text:
         return False
+    return True
 
 
 def analyze_content_with_ai(content: str) -> Optional[Dict]:
-    """使用大模型分析内容，提取技术分类、核心动作要点"""
+    """使用大模型分析内容，提取技术分类、核心动作要点，同时判断是否相关，一次调用搞定"""
     prompt = f"""
-请分析以下巴西柔术相关的视频内容，提取以下信息：
-1. 技术分类：视频中主要演示的巴西柔术技术类别，比如：guard, side control, mount, back take, 降服, 扫倒, 逃脱, 过腿, 摔法, 防守等，最多2个标签
-2. 核心动作要点：列出3个最关键的动作要点，每个要点不超过20字
+请分析以下巴西柔术相关的视频内容，先判断是否是真正的巴西柔术技术相关视频，然后提取信息：
+1. 首先判断：是否是巴西柔术技术相关（包含技术教学、实战演示、技巧讲解、训练方法、比赛技术分析才算，其他都不算）
+2. 如果是相关的：
+   - 技术分类：视频中主要演示的巴西柔术技术类别，比如：guard, side control, mount, back take, 降服, 扫倒, 逃脱, 过腿, 摔法, 防守等，最多2个标签
+   - 核心动作要点：列出3个最关键的动作要点，每个要点不超过20字
 
 内容：{content}
 
 请严格按照JSON格式返回，不要有其他内容：
 {{
+    "is_related": true/false,
     "技术分类": ["标签1", "标签2"],
-    "核心动作要点": [
-        "动作要点1",
-        "动作要点2", 
-        "动作要点3"
-    ]
+    "核心动作要点": ["动作要点1", "动作要点2", "动作要点3"]
 }}
 """
     
@@ -241,7 +215,8 @@ def analyze_content_with_ai(content: str) -> Optional[Dict]:
                 {"role": "system", "content": "你是一个专业的巴西柔术黑带教练，擅长分析技术动作，提取关键信息。"},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3
+            temperature=0.3,
+            timeout=REQUEST_TIMEOUT
         )
         
         result = response.choices[0].message.content.strip()
@@ -681,12 +656,10 @@ def process_single_video(bvid: str, page_id: str = None) -> bool:
     print(f"👤 UP主: {video_info['owner']['name']}")
     print(f"⏱️  视频时长: {int(video_info['duration'])//60}:{int(video_info['duration'])%60:02d}")
     
-    # 2. 相关性过滤
-    print("🔍 正在判断是否是巴西柔术相关视频...")
-    if not is_bjj_related(video_info):
-        print("❌ 无关视频，跳过")
+    # 2. 前置关键词快速过滤
+    if not is_related_by_keyword(video_info["title"], video_info["desc"]):
+        print("❌ 关键词过滤：无关视频，跳过")
         return False
-    print("✅ 是相关视频")
     
     # 3. 获取字幕或简介
     subtitle = get_video_cc_subtitle(bvid, video_info["cid"])
@@ -697,11 +670,15 @@ def process_single_video(bvid: str, page_id: str = None) -> bool:
         content_text = f"标题: {video_info['title']}\n简介: {video_info['desc']}"
         print("ℹ️  无CC字幕，使用标题和简介")
     
-    # 4. AI分析内容
+    # 4. AI分析内容，一次调用同时判断相关性和提取信息
     print("🤖 正在AI分析内容...")
     ai_analysis = analyze_content_with_ai(content_text)
     if not ai_analysis:
         print("❌ AI分析失败")
+        return False
+    
+    if not ai_analysis["is_related"]:
+        print("❌ AI判断：无关视频，跳过")
         return False
     
     print(f"🏷️  技术分类: {ai_analysis['技术分类']}")
@@ -720,7 +697,8 @@ def process_single_video(bvid: str, page_id: str = None) -> bool:
 
 def main():
     print("=" * 60)
-    print("B站巴西柔术视频自动抓取与Notion同步工具（完整版）")
+    print("B站巴西柔术视频自动抓取与Notion同步工具（优化版）")
+    print("✅ 只抓昨日发布的视频，无重复，速度快")
     print("=" * 60)
     
     # 第一步：处理待处理的手动添加条目
@@ -735,15 +713,16 @@ def main():
         print("✅ 没有待处理的手动条目")
     
     # 第二步：自动搜索新视频
-    print("\n[步骤2] 搜索B站最新发布的巴西柔术视频...")
+    print("\n[步骤2] 搜索B站昨日发布的巴西柔术视频...")
     existing_bvids = get_existing_bvids()
-    main()
+    print(f"当前Notion中已有 {len(existing_bvids)} 个视频")
+    
     all_videos = []
     for kw in BILIBILI_SEARCH_KEYWORDS:
         print(f"\n正在搜索关键词: {kw}")
-        videos = search_bilibili_videos(kw, page_size=30)
+        videos = search_bilibili_videos(kw)
         all_videos.extend(videos)
-        print(f"关键词 {kw} 搜索到 {len(videos)} 个视频")
+        print(f"关键词 {kw} 搜索到 {len(videos)} 个昨日视频")
     # 按BV号去重，避免同一个视频在多个关键词里被搜到
     seen_bvids = set()
     unique_videos = []
@@ -753,23 +732,7 @@ def main():
             seen_bvids.add(bvid)
             unique_videos.append(video)
     videos = unique_videos
-    print(f"\n所有关键词共搜索到 {len(all_videos)} 个视频，去重后 {len(videos)} 个")
-    all_videos = []
-    for kw in BILIBILI_SEARCH_KEYWORDS:
-        print(f"\n正在搜索关键词: {kw}")
-        videos = search_bilibili_videos(kw, page_size=30)
-        all_videos.extend(videos)
-        print(f"关键词 {kw} 搜索到 {len(videos)} 个视频")
-    # 按BV号去重，避免同一个视频在多个关键词里被搜到
-    seen_bvids = set()
-    unique_videos = []
-    for video in all_videos:
-        bvid = video["bvid"]
-        if bvid not in seen_bvids:
-            seen_bvids.add(bvid)
-            unique_videos.append(video)
-    videos = unique_videos
-    print(f"\n所有关键词共搜索到 {len(all_videos)} 个视频，去重后 {len(videos)} 个")
+    print(f"\n所有关键词共搜索到 {len(all_videos)} 个昨日视频，去重后 {len(videos)} 个")
 
     if not videos:
         print("❌ 未搜索到视频")
@@ -784,18 +747,18 @@ def main():
 
     print(f"其中有 {len(new_videos)} 个新视频需要处理")
 
-    # 处理新视频，最多处理10个，避免消耗太多API额度
+    # 处理新视频，最多处理MAX_PROCESS_VIDEO个
     processed_count = 0
     for i, video in enumerate(new_videos):
-        if processed_count >= 10:
+        if processed_count >= MAX_PROCESS_VIDEO:
             break
         bvid = video["bvid"]
         print(f"\n[{i+1}/{len(new_videos)}] 处理新视频: {bvid}")
         if process_single_video(bvid):
             processed_count += 1
-        print(f"已成功处理 {processed_count}/10 个视频")
+        print(f"已成功处理 {processed_count}/{MAX_PROCESS_VIDEO} 个视频")
 
-    print("\n🎉 所有处理任务结束")
+    print(f"\n🎉 所有处理任务结束！本次共处理 {processed_count} 个新视频")
 
 
 if __name__ == "__main__":
